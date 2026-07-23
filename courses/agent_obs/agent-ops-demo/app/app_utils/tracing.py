@@ -63,7 +63,7 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
         self.bucket = self.storage_client.bucket(self.bucket_name)
     
     #Helper function to convert dict attributes to JSON strings: 
-    def sanitize_attrs(attributes: dict) -> dict:
+    def sanitize_attrs(self, attributes: dict) -> dict:
         clean = {}
         for key, val in attributes.items():
             if isinstance(val, dict):
@@ -88,10 +88,12 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
 
             # 1. --- SANITIZE ATTRIBUTES (Converts dicts like tool_call_args to strings) ---
             if "attributes" in span_dict:
-                span_dict["attributes"] = sanitize_attrs(span_dict["attributes"])
-
+                span_dict["attributes"] = self.sanitize_attrs(span_dict["attributes"])
+            
             # 2. --- BUBBLE UP TOKENS DIRECTLY ---
             attrs = span_dict.get("attributes", {})
+            # PRINT ALL KEYS TO YOUR TERMINAL:
+            print(f"🔑 SPAN '{span_dict.get('name')}' KEYS: {list(attrs.keys())}")
             input_tokens = (
                 attrs.get("gen_ai.usage.input_tokens")
                 or attrs.get("llm.token_count.prompt")
