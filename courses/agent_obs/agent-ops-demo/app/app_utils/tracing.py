@@ -62,14 +62,14 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
         )
         self.bucket = self.storage_client.bucket(self.bucket_name)
     
-    #Helper function to convert dict attributes to JSON strings: 
     def sanitize_attrs(self, attributes: dict) -> dict:
+        """Helper function to convert dict attributes to JSON strings."""
         clean = {}
         for key, val in attributes.items():
             if isinstance(val, dict):
-              clean[key] = json.dumps(val)
+                clean[key] = json.dumps(val)
             else:
-              clean[key] = val
+                clean[key] = val
         return clean
 
 
@@ -89,11 +89,9 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
             # 1. --- SANITIZE ATTRIBUTES (Converts dicts like tool_call_args to strings) ---
             if "attributes" in span_dict:
                 span_dict["attributes"] = self.sanitize_attrs(span_dict["attributes"])
-            
+
             # 2. --- BUBBLE UP TOKENS DIRECTLY ---
             attrs = span_dict.get("attributes", {})
-            # PRINT ALL KEYS TO YOUR TERMINAL:
-            print(f"🔑 SPAN '{span_dict.get('name')}' KEYS: {list(attrs.keys())}")
             input_tokens = (
                 attrs.get("gen_ai.usage.input_tokens")
                 or attrs.get("llm.token_count.prompt")
@@ -171,7 +169,6 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
         blob.upload_from_string(content, "application/json")
         return f"gs://{self.bucket_name}/{blob_name}"
     
-    #update: actually remove the large attributes from attributes_retain before logging:
     def _process_large_attributes(self, span_dict: dict, span_id: str) -> dict:
         """
         Process large attribute values by storing them in GCS if they exceed the size
