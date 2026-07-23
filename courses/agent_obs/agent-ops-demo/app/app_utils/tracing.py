@@ -61,6 +61,17 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
             bucket_name or f"{self.project_id}-agent-ops-demo-logs"
         )
         self.bucket = self.storage_client.bucket(self.bucket_name)
+    
+    #Helper function to convert dict attributes to JSON strings: 
+    def sanitize_attrs(attributes: dict) -> dict:
+        clean = {}
+        for key, val in attributes.items():
+            if isinstance(val, dict):
+              clean[key] = json.dumps(val)
+            else:
+              clean[key] = val
+        return clean
+
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         """
@@ -75,6 +86,45 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
             span_id = format(span_context.span_id, "x")
             span_dict = json.loads(span.to_json())
 
+            # 1. --- SANITIZE ATTRIBUTES (Converts dicts like tool_call_args to strings) ---
+            if "attributes" in span_dict:
+                span_dict["attributes"] = sanitize_attrs(span_dict["attributes"])
+
+            # 2. --- BUBBLE UP TOKENS DIRECTLY ---
+            attrs = span_dict.get("attributes", {})
+            input_tokens = (
+                attrs.get("gen_ai.usage.input_tokens")
+                or attrs.get("llm.token_count.prompt")
+                or 0
+            )
+            output_tokens = (
+                attrs.get("gen_ai.usage.output_tokens")
+                or attrs.get("llm.token_count.candidates")
+                or 0
+            )
+            total_tokens = input_tokens + output_tokens
+            # Console Write-Line (JSON for automatic Cloud Logging parsing):
+            print(
+                json.dumps({
+                    "event": "token_summary",
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "total_tokens": total_tokens,
+                })
+            )
+            # 3. --- CONSOLE WRITE-LINE (Creates top-level jsonPayload in Cloud Logging) ---
+            print(
+                json.dumps({
+                    "event": "token_summary",
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "total_tokens": total_tokens,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                })
+            )
+
+            # 4. --- EXISTING SPAN EXPORT LOGIC ---
             span_dict["trace"] = f"projects/{self.project_id}/traces/{trace_id}"
             span_dict["span_id"] = span_id
 
@@ -94,6 +144,7 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
                 },
                 severity="INFO",
             )
+            
         # Export spans to Google Cloud Trace using the parent class method
         return super().export(spans)
 
@@ -117,30 +168,31 @@ class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
 
         blob.upload_from_string(content, "application/json")
         return f"gs://{self.bucket_name}/{blob_name}"
-
+    
+    #update: actually remove the large attributes from attributes_retain before logging:
     def _process_large_attributes(self, span_dict: dict, span_id: str) -> dict:
         """
         Process large attribute values by storing them in GCS if they exceed the size
         limit of Google Cloud Logging.
 
         :param span_dict: The span data dictionary
-        :param trace_id: The trace ID
         :param span_id: The span ID
         :return: The updated span dictionary
         """
         attributes = span_dict["attributes"]
         if len(json.dumps(attributes).encode()) > 255 * 1024:  # 250 KB
-            # Separate large payload from other attributes
-            attributes_payload = dict(attributes.items())
-            attributes_retain = dict(attributes.items())
-
             # Store large payload in GCS
+            attributes_payload = dict(attributes.items())
             gcs_uri = self.store_in_gcs(json.dumps(attributes_payload), span_id)
-            attributes_retain["uri_payload"] = gcs_uri
-            attributes_retain["url_payload"] = (
-                f"https://storage.mtls.cloud.google.com/"
-                f"{self.bucket_name}/spans/{span_id}.json"
-            )
+            
+            # Keep only the URI pointers, not the original large attributes
+            attributes_retain = {
+                "uri_payload": gcs_uri,
+                "url_payload": (
+                    f"https://storage.mtls.cloud.google.com/"
+                    f"{self.bucket_name}/spans/{span_id}.json"
+                )
+            }
 
             span_dict["attributes"] = attributes_retain
             logging.info(
