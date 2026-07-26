@@ -1,18 +1,8 @@
 # Copyright 2025 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Licensed under the Apache License, Version 2.0
 
 # mypy: disable-error-code="attr-defined,arg-type"
+
 import logging
 import os
 from typing import Any
@@ -22,7 +12,7 @@ import vertexai
 from google.adk.artifacts import GcsArtifactService, InMemoryArtifactService
 from google.cloud import logging as google_cloud_logging
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider, export
+from opentelemetry.sdk.trace import export
 from vertexai.agent_engines.templates.adk import AdkApp
 
 from app.agent import app as adk_app
@@ -34,28 +24,45 @@ class AgentEngineApp(AdkApp):
     def set_up(self) -> None:
         """Set up logging and tracing for the agent engine app."""
         super().set_up()
+
         logging.basicConfig(level=logging.INFO)
-        logging_client = google_cloud_logging.Client()
-        self.logger = logging_client.logger(__name__)
-        provider = TracerProvider()
+        self.app_logger = logging.getLogger("agent_ops_demo")
+        self.app_logger.setLevel(logging.INFO)
+
+        self.logging_client = google_cloud_logging.Client()
+        self.cloud_logger = self.logging_client.logger("agent_ops_demo")
+
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        provider = trace.get_tracer_provider()
+
         processor = export.BatchSpanProcessor(
             CloudTraceLoggingSpanExporter(
-                project_id=os.environ.get("GOOGLE_CLOUD_PROJECT")
+                project_id=project_id,
+                logging_client=self.logging_client,
+                log_name="agent_ops_span_summaries",
             )
         )
-        provider.add_span_processor(processor)
-        trace.set_tracer_provider(provider)
+
+        if hasattr(provider, "add_span_processor"):
+            provider.add_span_processor(processor)
+            self.app_logger.info("Attached CloudTraceLoggingSpanExporter to existing tracer provider")
+        else:
+            self.app_logger.warning(
+                "Global tracer provider does not support add_span_processor; "
+                "custom span summary exporter was not attached."
+            )
 
     def register_feedback(self, feedback: dict[str, Any]) -> None:
         """Collect and log feedback."""
         feedback_obj = Feedback.model_validate(feedback)
-        self.logger.log_struct(feedback_obj.model_dump(), severity="INFO")
+        self.cloud_logger.log_struct(
+            feedback_obj.model_dump(),
+            severity="INFO",
+            labels={"source": "register_feedback"},
+        )
 
     def register_operations(self) -> dict[str, list[str]]:
-        """Registers the operations of the Agent.
-
-        Extends the base operations to include feedback registration functionality.
-        """
+        """Register operations, including feedback registration."""
         operations = super().register_operations()
         operations[""] = operations.get("", []) + ["register_feedback"]
         return operations
@@ -63,7 +70,9 @@ class AgentEngineApp(AdkApp):
 
 _, project_id = google.auth.default()
 vertexai.init(project=project_id, location="us-central1")
+
 artifacts_bucket_name = os.environ.get("ARTIFACTS_BUCKET_NAME")
+
 agent_engine = AgentEngineApp(
     app=adk_app,
     artifact_service_builder=lambda: GcsArtifactService(
