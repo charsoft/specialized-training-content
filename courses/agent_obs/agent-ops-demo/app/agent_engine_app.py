@@ -4,7 +4,6 @@
 # mypy: disable-error-code="attr-defined,arg-type"
 
 import logging
-import os
 from typing import Any
 
 import google.auth
@@ -20,6 +19,12 @@ from app.app_utils.tracing import CloudTraceLoggingSpanExporter
 from app.app_utils.typing import Feedback
 
 
+_, PROJECT_ID = google.auth.default()
+LOCATION = "us-central1"
+
+vertexai.init(project=PROJECT_ID, location=LOCATION)
+
+
 class AgentEngineApp(AdkApp):
     def set_up(self) -> None:
         """Set up logging and tracing for the agent engine app."""
@@ -29,15 +34,14 @@ class AgentEngineApp(AdkApp):
         self.app_logger = logging.getLogger("agent_ops_demo")
         self.app_logger.setLevel(logging.INFO)
 
-        self.logging_client = google_cloud_logging.Client()
+        self.logging_client = google_cloud_logging.Client(project=PROJECT_ID)
         self.cloud_logger = self.logging_client.logger("agent_ops_demo")
 
-        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
         provider = trace.get_tracer_provider()
 
         processor = export.BatchSpanProcessor(
             CloudTraceLoggingSpanExporter(
-                project_id=project_id,
+                project_id=PROJECT_ID,
                 logging_client=self.logging_client,
                 log_name="agent_ops_span_summaries",
             )
@@ -45,7 +49,11 @@ class AgentEngineApp(AdkApp):
 
         if hasattr(provider, "add_span_processor"):
             provider.add_span_processor(processor)
-            self.app_logger.info("Attached CloudTraceLoggingSpanExporter to existing tracer provider")
+            self.app_logger.info(
+                "Attached CloudTraceLoggingSpanExporter to existing tracer provider "
+                "for project %s",
+                PROJECT_ID,
+            )
         else:
             self.app_logger.warning(
                 "Global tracer provider does not support add_span_processor; "
@@ -67,18 +75,8 @@ class AgentEngineApp(AdkApp):
         operations[""] = operations.get("", []) + ["register_feedback"]
         return operations
 
-#This is safer because the deploy command already knows the intended project, 
-#and the Cloud Trace exporter documentation explicitly expects a plain GCP project ID, 
-#including support for exporter-specific project configuration.
-_, default_project_id = google.auth.default()
-project_id = (
-    os.environ.get("OTEL_EXPORTER_GCP_TRACE_PROJECT_ID")
-    or os.environ.get("GOOGLE_CLOUD_PROJECT")
-    or default_project_id
-)
-vertexai.init(project=project_id, location="us-central1")
 
-artifacts_bucket_name = os.environ.get("ARTIFACTS_BUCKET_NAME")
+artifacts_bucket_name = None  # or keep your existing env-based bucket lookup here
 
 agent_engine = AgentEngineApp(
     app=adk_app,
