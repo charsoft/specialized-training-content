@@ -153,6 +153,8 @@ def deploy_agent_engine_app(
     env_vars["GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"] = "true"
     env_vars["OTEL_SEMCONV_STABILITY_OPT_IN"] = "gen_ai_latest_experimental"
     env_vars["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "EVENT_ONLY"
+    env_vars["GOOGLE_CLOUD_PROJECT"] = project
+    env_vars["OTEL_EXPORTER_GCP_TRACE_PROJECT_ID"] = project
 
     print(
         """
