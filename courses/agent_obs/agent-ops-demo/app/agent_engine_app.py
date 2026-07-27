@@ -67,8 +67,15 @@ class AgentEngineApp(AdkApp):
         operations[""] = operations.get("", []) + ["register_feedback"]
         return operations
 
-
-_, project_id = google.auth.default()
+#This is safer because the deploy command already knows the intended project, 
+#and the Cloud Trace exporter documentation explicitly expects a plain GCP project ID, 
+#including support for exporter-specific project configuration.
+_, default_project_id = google.auth.default()
+project_id = (
+    os.environ.get("OTEL_EXPORTER_GCP_TRACE_PROJECT_ID")
+    or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    or default_project_id
+)
 vertexai.init(project=project_id, location="us-central1")
 
 artifacts_bucket_name = os.environ.get("ARTIFACTS_BUCKET_NAME")
