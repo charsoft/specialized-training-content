@@ -41,7 +41,12 @@ async def simulate_load() -> None:
         async for event in remote_agent_engine.async_stream_query(
                 message=prompts[random.randint(0,3)], user_id="test"
             ):
-                print(event['content']['parts'][0])
+                if 'content' in event and 'parts' in event['content']:
+                  print(event['content']['parts'][0])
+                elif 'function_call' in event:
+                  print(f"🔧 Tool Call: {event['function_call']['name']}")
+                elif 'function_response' in event:
+                  print(f"✅ Tool Response: {event['function_response']['name']}")
 
         await asyncio.sleep(1)
 
