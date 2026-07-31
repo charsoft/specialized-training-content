@@ -4,6 +4,7 @@
 # mypy: disable-error-code="attr-defined,arg-type"
 
 import logging
+import os
 from typing import Any
 
 import google.auth
@@ -19,10 +20,14 @@ from app.app_utils.tracing import CloudTraceLoggingSpanExporter
 from app.app_utils.typing import Feedback
 
 
-_, PROJECT_ID = google.auth.default()
+CREDENTIALS, ADC_PROJECT_ID = google.auth.default()
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT") or ADC_PROJECT_ID
 LOCATION = "us-central1"
 
-vertexai.init(project=PROJECT_ID, location=LOCATION)
+if not PROJECT_ID:
+    raise ValueError("Could not resolve Google Cloud project ID")
+
+vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=CREDENTIALS)
 
 
 class AgentEngineApp(AdkApp):
@@ -76,7 +81,7 @@ class AgentEngineApp(AdkApp):
         return operations
 
 
-artifacts_bucket_name = None  # or keep your existing env-based bucket lookup here
+artifacts_bucket_name = os.environ.get("ARTIFACTS_BUCKET_NAME")  
 
 agent_engine = AgentEngineApp(
     app=adk_app,
