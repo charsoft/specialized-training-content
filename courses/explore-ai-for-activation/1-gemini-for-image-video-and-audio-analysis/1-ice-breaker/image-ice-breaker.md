@@ -4,7 +4,7 @@
 10 minutes
 
 ## Overview
-In this lab, you will use Gemini's image generation model to place yourself—using your own headshot—into a Cymbal Mart warehouse setting. This is a quick, fun introduction to Gemini's multimodal image generation capabilities and a great way to kick off the course.
+In this lab, you use Gemini's image generation model to place yourself—using your own headshot—into a Cymbal Mart warehouse setting. This is a quick, fun introduction to Gemini's multimodal image generation capabilities and a great way to kick off the course.
 
 ### You learn how to:
 - Upload an image file as context for an image generation prompt.
@@ -33,7 +33,9 @@ Cymbal Mart is running an internal employee spotlight campaign. The Social Media
       <em>Create images tool</em>
    </p>
 
-3. Click **+ Add files** and select **Upload files**. In the dialog, upload a photo of yourself, and click **Open**. __Note:__ if it is easier, just copy a picture of yourself to the clipboard and paste it in the chat box. 
+3. Click **+ Add files** and select **Upload files**. In the dialog, upload a photo of yourself, and click **Open**.
+
+    __Note:__ If it is easier, just copy a picture of yourself to the clipboard and paste it in the chat box. 
 
 4. Copy and paste the following prompt into the chat, then press ENTER:
 
@@ -54,13 +56,13 @@ Adjust the image using the attached logo on the vest.
    <p align="left">
       <img src="images/image-gen-result.png" width="50%" alt="Generate Image Result" />
       <br>
-      <em>Example of a generated image.</em>
+      <em>Example of a generated image</em>
    </p>
 
 
 6. Review the generated image. If the likeness or setting is not quite right, see the Bonus Task below for refinement techniques.
 
-### Bonus Task 2: Refine and experiment
+### Bonus Task: Refine and experiment
 
 1. Try swapping the setting. Ask Gemini to regenerate the same portrait but place you **on the floor of a busy Cymbal Mart retail store** instead of the warehouse—surrounded by product displays, customers, and branded signage.
 
@@ -72,7 +74,7 @@ Adjust the image using the attached logo on the vest.
    <p align="left">
       <img src="images/image-gen-result2.png" width="50%" alt="Generate Image Result" />
       <br>
-      <em>Example of a generated image.</em>
+      <em>Example of a generated image</em>
    </p>
 
 ## Congratulations!
