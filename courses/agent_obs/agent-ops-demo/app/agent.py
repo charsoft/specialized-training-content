@@ -2,8 +2,11 @@ from google.adk.agents import Agent
 from google.adk.apps.app import App
 from google.adk.tools.bigquery import BigQueryCredentialsConfig, BigQueryToolset
 from opentelemetry import trace
-#from app.custom_tools import custom_db_lookup
-from app.custom_tools_with_trace import custom_db_lookup #swap this one for the one above when showing tooling vs no tooling
+## ----- DEMO NOTES: first demo using custom tools, make sure to run the non-OTEL instrumented method below
+from app.custom_tools import custom_db_lookup
+#  from app.custom_tools_with_trace import custom_db_lookup #swap this one for the one above when showing tooling vs no tooling
+### ---- END DEMO NOTES
+
 import google.auth
 import dotenv
 import random
@@ -43,8 +46,9 @@ def possible_bottleneck() -> dict[str, int]:
 
   return {"delay": delay_ms}
 
-#for first few demos, use this one. Rename it and redeploy if you would like to demo custom tooling (new agent below, just swap out the name so we only have one root_agent)
-root_agent_v1 = Agent(
+### ---- DEMO NOTES ----
+# for first few demos, use this one. No custom tools, no custom instructions, just basic trace
+root_agent = Agent(   #rename the root_agent to root_agent_v1 when switching over to the custom tools demo
  model="gemini-2.5-flash",
  name="bigquery_agent",
  description="Agent that answers questions about BigQuery data by executing SQL queries.",
@@ -59,7 +63,7 @@ root_agent_v1 = Agent(
 )
 
 #this calls the custom db lookup tool
-root_agent = Agent(
+root_agent_v2 = Agent(  #rename the root_agent to root_agent when switching over to the custom tools demo
  model="gemini-2.5-flash",
  name="bigquery_agent",
  description="Agent that answers questions about BigQuery data by executing SQL queries.",
