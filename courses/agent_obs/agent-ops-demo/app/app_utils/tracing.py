@@ -1,134 +1,247 @@
 # Copyright 2025 Google LLC
 # Licensed under the Apache License, Version 2.0
 
+import asyncio
+import datetime
+import importlib
+import inspect
 import json
-from collections.abc import Sequence
+import logging
+import warnings
 from typing import Any
 
-import google.cloud.storage as storage
-from google.cloud import logging as google_cloud_logging
-from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export import SpanExportResult
+import click
+import google.auth
+import vertexai
+from vertexai._genai import _agent_engines_utils
+from vertexai._genai.types import AgentEngine, AgentEngineConfig
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module="google.cloud.aiplatform",
+)
 
 
-class CloudTraceLoggingSpanExporter(CloudTraceSpanExporter):
-    """
-    Cloud Trace exporter that also writes structured span summaries to Cloud Logging.
-    """
+def generate_class_methods_from_agent(agent_instance: Any) -> list[dict[str, Any]]:
+    """Generate method specifications with schemas from agent register_operations()."""
+    registered_operations = _agent_engines_utils._get_registered_operations(
+        agent=agent_instance
+    )
+    class_methods_spec = _agent_engines_utils._generate_class_methods_spec_or_raise(
+        agent=agent_instance,
+        operations=registered_operations,
+    )
+    return [_agent_engines_utils._to_dict(method_spec) for method_spec in class_methods_spec]
 
-    def __init__(
-        self,
-        logging_client: google_cloud_logging.Client | None = None,
-        storage_client: storage.Client | None = None,
-        bucket_name: str | None = None,
-        log_name: str = "agent_ops_span_summaries",
-        debug: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(**kwargs)
-        self.debug = debug
-        self.logging_client = logging_client or google_cloud_logging.Client(
-            project=self.project_id
-        )
-        self.storage_client = storage_client or storage.Client(project=self.project_id)
-        self.bucket_name = bucket_name or f"{self.project_id}-agent-ops-demo-logs"
-        self.bucket = self.storage_client.bucket(self.bucket_name)
-        self.cloud_logger = self.logging_client.logger(log_name)
 
-    def sanitize_attrs(self, attributes: dict[str, Any]) -> dict[str, Any]:
-        clean: dict[str, Any] = {}
-        for key, val in attributes.items():
-            if isinstance(val, dict):
-                clean[key] = json.dumps(val)
+def parse_key_value_pairs(kv_string: str | None) -> dict[str, str]:
+    """Parse key-value pairs from a comma-separated KEY=VALUE string."""
+    result: dict[str, str] = {}
+    if kv_string:
+        for pair in kv_string.split(","):
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                result[key.strip()] = value.strip()
             else:
-                clean[key] = val
-        return clean
+                logging.warning("Skipping malformed key-value pair: %s", pair)
+    return result
 
-    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        for span in spans:
-            try:
-                span_context = span.get_span_context()
-                trace_id = f"{span_context.trace_id:032x}"
-                span_id = f"{span_context.span_id:016x}"
 
-                try:
-                    span_dict = json.loads(span.to_json())
-                    attrs = span_dict.get("attributes", {})
-                except Exception:
-                    attrs = dict(span.attributes) if hasattr(span, "attributes") else {}
+def write_deployment_metadata(
+    remote_agent: Any,
+    metadata_file: str = "deployment_metadata.json",
+) -> None:
+    """Write deployment metadata to file."""
+    metadata = {
+        "remote_agent_engine_id": remote_agent.api_resource.name,
+        "deployment_timestamp": datetime.datetime.now().isoformat(),
+    }
+    with open(metadata_file, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+    logging.info("Agent Engine ID written to %s", metadata_file)
 
-                clean_attrs = self.sanitize_attrs(attrs)
 
-                input_tokens = (
-                    clean_attrs.get("gen_ai.usage.input_tokens")
-                    or clean_attrs.get("llm.token_count.prompt")
-                    or 0
-                )
-                output_tokens = (
-                    clean_attrs.get("gen_ai.usage.output_tokens")
-                    or clean_attrs.get("llm.token_count.candidates")
-                    or 0
-                )
-                total_tokens = int(input_tokens) + int(output_tokens)
+def print_deployment_success(remote_agent: Any, location: str, project: str) -> None:
+    """Print deployment success message with console URL."""
+    resource_name_parts = remote_agent.api_resource.name.split("/")
+    agent_engine_id = resource_name_parts[-1]
+    project_number = resource_name_parts[1]
 
-                vertex_event_id = clean_attrs.get("gcp.vertex.agent.event_id", "unknown")
-                vertex_agent_name = clean_attrs.get("gen_ai.agent.name", "unknown")
+    print("\n✅ Deployment successful!")
 
-                payload = {
-                    "message": f"Agent {vertex_agent_name} telemetry metrics summary.",
-                    "vertex_agent": {
-                        "event_id": vertex_event_id,
-                        "agent_name": vertex_agent_name,
-                    },
-                    "usage": {
-                        "input_tokens": int(input_tokens),
-                        "output_tokens": int(output_tokens),
-                        "total_tokens": int(total_tokens),
-                    },
-                    "span": {
-                        "name": getattr(span, "name", "unknown"),
-                        "trace_id": trace_id,
-                        "span_id": span_id,
-                    },
-                }
+    service_account = remote_agent.api_resource.spec.service_account
+    if service_account:
+        print(f"Service Account: {service_account}")
+    else:
+        default_sa = f"service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
+        print(f"Service Account: {default_sa}")
 
-                self.cloud_logger.log_struct(
-                    payload,
-                    severity="INFO",
-                    labels={"source": "CloudTraceLoggingSpanExporter"},
-                    trace=f"projects/{self.project_id}/traces/{trace_id}",
-                    span_id=span_id,
-                )
+    playground_url = (
+        f"https://console.cloud.google.com/vertex-ai/agents/locations/"
+        f"{location}/agent-engines/{agent_engine_id}/playground?project={project}"
+    )
+    print(f"\n📊 Open Console Playground: {playground_url}\n")
 
-            except Exception as exc:
-                self.cloud_logger.log_struct(
-                    {
-                        "message": "CRITICAL EXPORTER FAILURE",
-                        "error": str(exc),
-                    },
-                    severity="ERROR",
-                    labels={"source": "CloudTraceLoggingSpanExporter"},
-                )
 
-        try:
-            for span in spans:
-                if hasattr(span, "_attributes") and span._attributes:
-                    keys_to_clear = [
-                        k for k, v in span._attributes.items() if isinstance(v, dict)
-                    ]
-                    for key in keys_to_clear:
-                        span._attributes[key] = json.dumps(span._attributes[key])
+@click.command()
+@click.option("--project", default=None)
+@click.option("--location", default="us-central1")
+@click.option("--display-name", default="agent-ops-demo")
+@click.option(
+    "--description",
+    default="A base ReAct agent built with Google's Agent Development Kit (ADK)",
+)
+@click.option(
+    "--source-packages",
+    multiple=True,
+    default=["./app"],
+)
+@click.option(
+    "--entrypoint-module",
+    default="app.agent_engine_app",
+)
+@click.option(
+    "--entrypoint-object",
+    default="agent_engine",
+)
+@click.option(
+    "--requirements-file",
+    default="app/app_utils/.requirements.txt",
+)
+@click.option("--set-env-vars", default=None)
+@click.option("--labels", default=None)
+@click.option("--service-account", default=None)
+@click.option("--min-instances", type=int, default=1)
+@click.option("--max-instances", type=int, default=10)
+@click.option("--cpu", default="4")
+@click.option("--memory", default="8Gi")
+@click.option("--container-concurrency", type=int, default=9)
+@click.option("--num-workers", type=int, default=1)
+def deploy_agent_engine_app(
+    project: str | None,
+    location: str,
+    display_name: str,
+    description: str,
+    source_packages: tuple[str, ...],
+    entrypoint_module: str,
+    entrypoint_object: str,
+    requirements_file: str,
+    set_env_vars: str | None,
+    labels: str | None,
+    service_account: str | None,
+    min_instances: int,
+    max_instances: int,
+    cpu: str,
+    memory: str,
+    container_concurrency: int,
+    num_workers: int,
+) -> AgentEngine:
+    """Deploy the agent engine app to Vertex AI."""
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-            return super().export(spans)
+    env_vars = parse_key_value_pairs(set_env_vars)
+    labels_dict = parse_key_value_pairs(labels)
 
-        except Exception as exc:
-            self.cloud_logger.log_struct(
-                {
-                    "message": "PARENT EXPORTER TRACE WARNING CAPTURED",
-                    "error": str(exc),
-                },
-                severity="WARNING",
-                labels={"source": "CloudTraceLoggingSpanExporter"},
-            )
-            return SpanExportResult.SUCCESS
+    if "NUM_WORKERS" not in env_vars:
+        env_vars["NUM_WORKERS"] = str(num_workers)
+
+    if not project:
+        _, project = google.auth.default()
+
+    env_vars["GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"] = "true"
+    env_vars["OTEL_SEMCONV_STABILITY_OPT_IN"] = "gen_ai_latest_experimental"
+    env_vars["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "EVENT_ONLY"
+    env_vars["OTEL_EXPORTER_GCP_TRACE_PROJECT_ID"] = project
+
+    print(
+        """
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║      🤖 DEPLOYING AGENT TO VERTEX AI AGENT ENGINE 🤖      ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+"""
+    )
+
+    click.echo("\n📋 Deployment Parameters:")
+    click.echo(f" Project: {project}")
+    click.echo(f" Location: {location}")
+    click.echo(f" Display Name: {display_name}")
+    click.echo(f" Min Instances: {min_instances}")
+    click.echo(f" Max Instances: {max_instances}")
+    click.echo(f" CPU: {cpu}")
+    click.echo(f" Memory: {memory}")
+    click.echo(f" Container Concurrency: {container_concurrency}")
+    click.echo(f" NUM_WORKERS: {env_vars.get('NUM_WORKERS')}")
+    click.echo(
+        " Telemetry: "
+        f"GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY={env_vars['GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY']}, "
+        f"OTEL_SEMCONV_STABILITY_OPT_IN={env_vars['OTEL_SEMCONV_STABILITY_OPT_IN']}, "
+        f"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT={env_vars['OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT']}"
+    )
+    if service_account:
+        click.echo(f" Service Account: {service_account}")
+    click.echo("")
+
+    client = vertexai.Client(project=project, location=location)
+    vertexai.init(project=project, location=location)
+
+    logging.info("Importing %s.%s", entrypoint_module, entrypoint_object)
+    module = importlib.import_module(entrypoint_module)
+    agent_instance = getattr(module, entrypoint_object)
+
+    if inspect.iscoroutine(agent_instance):
+        logging.info("Detected coroutine, awaiting %s...", entrypoint_object)
+        agent_instance = asyncio.run(agent_instance)
+
+    class_methods_list = generate_class_methods_from_agent(agent_instance)
+
+    config = AgentEngineConfig(
+        display_name=display_name,
+        description=description,
+        source_packages=list(source_packages),
+        entrypoint_module=entrypoint_module,
+        entrypoint_object=entrypoint_object,
+        class_methods=class_methods_list,
+        env_vars=env_vars,
+        service_account=service_account,
+        requirements_file=requirements_file,
+        labels=labels_dict,
+        min_instances=min_instances,
+        max_instances=max_instances,
+        resource_limits={"cpu": cpu, "memory": memory},
+        container_concurrency=container_concurrency,
+        agent_framework="google-adk",
+    )
+
+    existing_agents = list(client.agent_engines.list())
+    matching_agents = [
+        agent
+        for agent in existing_agents
+        if agent.api_resource.display_name == display_name
+    ]
+
+    if matching_agents:
+        click.echo(f"\n📝 Updating existing agent: {display_name}")
+    else:
+        click.echo(f"\n🚀 Creating new agent: {display_name}")
+
+    click.echo("🚀 Deploying to Vertex AI Agent Engine (this can take 3-5 minutes)...")
+
+    if matching_agents:
+        remote_agent = client.agent_engines.update(
+            name=matching_agents[0].api_resource.name,
+            config=config,
+        )
+    else:
+        remote_agent = client.agent_engines.create(config=config)
+
+    write_deployment_metadata(remote_agent)
+    print_deployment_success(remote_agent, location, project)
+    return remote_agent
+
+
+if __name__ == "__main__":
+    deploy_agent_engine_app()
